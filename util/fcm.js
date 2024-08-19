@@ -9,61 +9,64 @@ module.exports = {
     * @returns {Promise<any>}
     * */
     send: async (entry) => {
-        console.log('send to FCM', entry);
-        let payload = {
-            notification: {
-              title: entry.title
+        try {
+            // console.log('send to FCM', entry);
+            let payload = {
+                notification: {
+                    title: entry.title
+                }
+            };
+            if (entry.body) {
+                payload.notification.body = entry.body;
             }
-        };
-        if (entry.body) {
-            payload.notification.body = entry.body;
-        }
-        if (entry.image) {
-            payload.notification.imageUrl = entry.image;
-        }
+            if (entry.image) {
+                payload.notification.imageUrl = entry.image;
+            }
 
-        if (entry.payload) {
-          try {
-            let jsonPayload = JSON.parse(entry.payload);
-            payload = { ...payload, ...jsonPayload };
-          } catch {
-            console.log("parsing failed so sending without payload")
-          }
-        }
+            if (entry.payload) {
+                try {
+                    let jsonPayload = JSON.parse(entry.payload);
+                    payload = { ...payload, ...jsonPayload };
+                } catch {
+                    console.log("parsing failed so sending without payload")
+                }
+            }
 
-        let options = {
-          mutableContent: true
-        }
+            let options = {
+                mutableContent: true
+            }
 
-        // console.log('payload', payload, 'target is ', entry.target);
-        let res = null;
-        if (entry.targetType === 'tokens') {
-            const tokens = entry.target.split(',');
-            if (tokens.length > 1) {
-                res = await admin.messaging().sendMulticast({ tokens }, payload, options);
+            // console.log('payload', payload, 'target is ', entry.target);
+            let res = null;
+            if (entry.targetType === 'tokens') {
+                const tokens = entry.target.split(',');
+                if (tokens.length > 1) {
+                    res = await admin.messaging().sendMulticast({ tokens }, payload, options);
+                } else {
+                    res = await admin.messaging().sendToDevice(entry.target, payload, options);
+                }
             } else {
-                res = await admin.messaging().sendToDevice(entry.target, payload, options);
+                const topics = entry.target.split(',');
+                if (topics.length > 1) {
+                    res = await admin.messaging().sendToCondition(
+                        topics.map(t => `'${t}' in topics`).join(' || '),
+                        payload,
+                        options
+                    );
+                } else {
+                    res = await admin.messaging().sendToTopic(entry.target, payload, options);
+                }
             }
-        } else {
-            const topics = entry.target.split(',');
-            if (topics.length > 1) {
-                res = await admin.messaging().sendToCondition(
-                    topics.map(t => `'${t}' in topics`).join(' || '),
-                    payload,
-                    options
-                );
-            } else {
-                res = await admin.messaging().sendToTopic(entry.target, payload, options);
-            }
+            // console.log('send to FCM res', JSON.stringify(res));
+            return res;
+        } catch (error) {
+            console.log('send to FCM error: >>>', error);
         }
-        console.log('send to FCM res', JSON.stringify(res));
-        return res;
     },
     /*
     * Initialize or reinitialize the firebase app
     * */
     initialize: async (strapi) => {
-        // console.log('initialize FCM');
         const data = await strapi.db.query('plugin::strapi-plugin-fcm.fcm-plugin-configuration').findOne({
             select: ['serviceAccount']
         });
