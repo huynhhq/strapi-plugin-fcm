@@ -41,9 +41,19 @@ module.exports = {
             if (entry.targetType === 'tokens') {
                 const tokens = entry.target.split(',');
                 if (tokens.length > 1) {
-                    res = await admin.messaging().sendMulticast({ tokens }, payload, options);
+                    // res = await admin.messaging().sendMulticast({ tokens }, payload, options);
+                    res = await admin.messaging().sendEachForMulticast({
+                        tokens,
+                        notification: payload.notification,
+                        data: payload.data,
+                    });
                 } else {
-                    res = await admin.messaging().sendToDevice(entry.target, payload, options);
+                    // res = await admin.messaging().sendToDevice(entry.target, payload, options);
+                    res = await admin.messaging().send({
+                        token: entry.target,
+                        notification: payload.notification,
+                        data: payload.data,
+                    });
                 }
             } else {
                 const topics = entry.target.split(',');
@@ -57,7 +67,7 @@ module.exports = {
                     res = await admin.messaging().sendToTopic(entry.target, payload, options);
                 }
             }
-            // console.log('send to FCM res', JSON.stringify(res));
+            console.log('send to FCM res', JSON.stringify(res));
             return res;
         } catch (error) {
             console.log('send to FCM error: >>>', error);
