@@ -67,7 +67,7 @@ module.exports = {
                     res = await admin.messaging().sendToTopic(entry.target, payload, options);
                 }
             }
-            console.log('send to FCM res', JSON.stringify(res));
+            // console.log('send to FCM res', JSON.stringify(res));
             return res;
         } catch (error) {
             console.log('send to FCM error: >>>', error);
