@@ -71,6 +71,7 @@ module.exports = {
             return res;
         } catch (error) {
             console.log('send to FCM error: >>>', error);
+            console.log('send to FCM error_entry', entry);
         }
     },
     /*
