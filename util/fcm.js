@@ -23,13 +23,34 @@ const isTopicLikeTarget = (value = '') => /^(\/?topics\/)/.test(String(value).tr
 const getMessagingErrorCode = (error) =>
     error?.errorInfo?.code || error?.code || error?.details?.errorCode;
 
+const parseEntryPayload = (rawPayload) => {
+    if (!rawPayload) {
+        return null;
+    }
+
+    if (typeof rawPayload === 'string') {
+        try {
+            return JSON.parse(rawPayload);
+        } catch {
+            console.log("parsing failed so sending without payload");
+            return null;
+        }
+    }
+
+    if (typeof rawPayload === 'object') {
+        return rawPayload;
+    }
+
+    return null;
+};
+
 // Builds a normalised message object for the modern Firebase Admin SDK.
 // - Conditionally includes `data` to avoid passing undefined to the SDK.
 // - Forwards mutableContent via the apns key so iOS notifications can be mutated.
 const buildMessage = (payload) => ({
     notification: payload.notification,
     ...(payload.data ? { data: payload.data } : {}),
-    apns: { payload: { aps: { mutableContent: true } } },
+    apns: { payload: { aps: { 'mutable-content': 1 } } },
 });
 
 const clearInvalidUserTokens = async (tokens = []) => {
@@ -82,13 +103,9 @@ module.exports = {
                 payload.notification.imageUrl = entry.image;
             }
 
-            if (entry.payload) {
-                try {
-                    let jsonPayload = JSON.parse(entry.payload);
-                    payload = { ...payload, ...jsonPayload };
-                } catch {
-                    console.log("parsing failed so sending without payload")
-                }
+            const parsedPayload = parseEntryPayload(entry.payload);
+            if (parsedPayload) {
+                payload = { ...payload, ...parsedPayload };
             }
 
             // console.log('payload', payload, 'target is ', entry.target);
