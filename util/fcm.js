@@ -2,6 +2,65 @@
 
 const admin = require("firebase-admin");
 
+const INVALID_TOKEN_ERROR_CODES = new Set([
+    'messaging/registration-token-not-registered',
+    'messaging/invalid-registration-token',
+]);
+
+const parseTokens = (target = '') => String(target)
+    .split(',')
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+const parseTopics = (target = '') => String(target)
+    .split(',')
+    .map((topic) => topic.trim())
+    .filter(Boolean)
+    .map((topic) => topic.replace(/^\/?topics\//, ''));
+
+const isTopicLikeTarget = (value = '') => /^(\/?topics\/)/.test(String(value).trim());
+
+const getMessagingErrorCode = (error) =>
+    error?.errorInfo?.code || error?.code || error?.details?.errorCode;
+
+// Builds a normalised message object for the modern Firebase Admin SDK.
+// - Conditionally includes `data` to avoid passing undefined to the SDK.
+// - Forwards mutableContent via the apns key so iOS notifications can be mutated.
+const buildMessage = (payload) => ({
+    notification: payload.notification,
+    ...(payload.data ? { data: payload.data } : {}),
+    apns: { payload: { aps: { mutableContent: true } } },
+});
+
+const clearInvalidUserTokens = async (tokens = []) => {
+    const uniqueTokens = [...new Set(tokens.filter(Boolean))];
+    if (uniqueTokens.length === 0 || !global.strapi) {
+        return;
+    }
+
+    try {
+        const users = await global.strapi.query("plugin::users-permissions.user").findMany({
+            where: { fcmToken: { $in: uniqueTokens } },
+            select: ['id', 'fcmToken'],
+        });
+
+        if (!users?.length) {
+            return;
+        }
+
+        await Promise.all(users.map((user) =>
+            global.strapi.query("plugin::users-permissions.user").update({
+                where: { id: user.id },
+                data: { fcmToken: null },
+            })
+        ));
+
+        console.warn('[FCM] Cleared invalid FCM token(s) from users:', uniqueTokens.length);
+    } catch (cleanupError) {
+        console.error('[FCM] Failed to clear invalid token(s):', cleanupError?.message || cleanupError);
+    }
+};
+
 module.exports = {
     /*
     * Send a message to a device(s) or a topic.
@@ -32,46 +91,94 @@ module.exports = {
                 }
             }
 
-            let options = {
-                mutableContent: true
-            }
-
             // console.log('payload', payload, 'target is ', entry.target);
             let res = null;
             if (entry.targetType === 'tokens') {
-                const tokens = entry.target.split(',');
+                const tokens = parseTokens(entry.target);
+                if (tokens.length === 0) {
+                    return { successCount: 0, failureCount: 0, skipped: true };
+                }
+
+                // Backward compatibility: some callsites incorrectly pass /topics/* with targetType=tokens.
+                if (tokens.every(isTopicLikeTarget)) {
+                    const topics = parseTopics(entry.target);
+                    if (topics.length === 0) {
+                        return { successCount: 0, failureCount: 0, skipped: true };
+                    }
+
+                    if (topics.length > 1) {
+                        res = await admin.messaging().send({
+                            condition: topics.map(t => `'${t}' in topics`).join(' || '),
+                            ...buildMessage(payload),
+                        });
+                    } else {
+                        res = await admin.messaging().send({
+                            topic: topics[0],
+                            ...buildMessage(payload),
+                        });
+                    }
+                    return res;
+                }
+
                 if (tokens.length > 1) {
                     // res = await admin.messaging().sendMulticast({ tokens }, payload, options);
                     res = await admin.messaging().sendEachForMulticast({
                         tokens,
-                        notification: payload.notification,
-                        data: payload.data,
+                        ...buildMessage(payload),
                     });
+
+                    const invalidTokens = [];
+                    (res?.responses || []).forEach((response, index) => {
+                        const code = getMessagingErrorCode(response?.error);
+                        if (!response?.success && INVALID_TOKEN_ERROR_CODES.has(code)) {
+                            invalidTokens.push(tokens[index]);
+                        }
+                    });
+
+                    if (invalidTokens.length > 0) {
+                        await clearInvalidUserTokens(invalidTokens);
+                    }
                 } else {
                     // res = await admin.messaging().sendToDevice(entry.target, payload, options);
                     res = await admin.messaging().send({
-                        token: entry.target,
-                        notification: payload.notification,
-                        data: payload.data,
+                        token: tokens[0],
+                        ...buildMessage(payload),
                     });
                 }
             } else {
-                const topics = entry.target.split(',');
+                const topics = parseTopics(entry.target);
+                if (topics.length === 0) {
+                    return { successCount: 0, failureCount: 0, skipped: true };
+                }
+
                 if (topics.length > 1) {
-                    res = await admin.messaging().sendToCondition(
-                        topics.map(t => `'${t}' in topics`).join(' || '),
-                        payload,
-                        options
-                    );
+                    res = await admin.messaging().send({
+                        condition: topics.map(t => `'${t}' in topics`).join(' || '),
+                        ...buildMessage(payload),
+                    });
                 } else {
-                    res = await admin.messaging().sendToTopic(entry.target, payload, options);
+                    res = await admin.messaging().send({
+                        topic: topics[0],
+                        ...buildMessage(payload),
+                    });
                 }
             }
             // console.log('send to FCM res', JSON.stringify(res));
             return res;
         } catch (error) {
-            console.log('send to FCM error: >>>', error);
-            console.log('send to FCM error_entry', entry);
+            const code = getMessagingErrorCode(error);
+            if (entry?.targetType === 'tokens' && INVALID_TOKEN_ERROR_CODES.has(code)) {
+                await clearInvalidUserTokens(parseTokens(entry?.target));
+            }
+
+            console.error('[FCM] send error:', error);
+            console.error('[FCM] send error, targetType:', entry?.targetType, '| target: [REDACTED]');
+
+            return {
+                successCount: 0,
+                failureCount: 1,
+                errorCode: code || 'messaging/unknown-error',
+            };
         }
     },
     /*
